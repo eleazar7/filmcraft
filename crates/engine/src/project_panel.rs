@@ -1267,11 +1267,25 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             Ok(Value::Null)
         }),
         c("project.copy", "Copy Project Items", "{}", has_project_selection, |s, _| {
-            s.state.project_clipboard = s.state.project_selection.iter().filter_map(|id| s.project.item(*id).cloned()).collect();
+            s.state.project_clipboard = s
+                .state
+                .project_selection
+                .iter()
+                .filter_map(|id| {
+                    s.project.item(*id).cloned().map(|item| crate::ProjectClipboardItem { source_graphic: s.project.source_graphics.get(id).cloned(), item })
+                })
+                .collect();
             Ok(json!({"copied": s.state.project_clipboard.len()}))
         }),
         c("project.cut", "Cut Project Items", "{}", has_project_selection, |s, _| {
-            s.state.project_clipboard = s.state.project_selection.iter().filter_map(|id| s.project.item(*id).cloned()).collect();
+            s.state.project_clipboard = s
+                .state
+                .project_selection
+                .iter()
+                .filter_map(|id| {
+                    s.project.item(*id).cloned().map(|item| crate::ProjectClipboardItem { source_graphic: s.project.source_graphics.get(id).cloned(), item })
+                })
+                .collect();
             let selected: BTreeSet<ItemId> = s.state.project_selection.iter().copied().collect();
             // A cut removes Project-panel entries, but an item already referenced by a sequence
             // must remain in the document so its Timeline clips stay online. Parents needed by an
@@ -1305,6 +1319,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
                     project.root.remove_item(*id);
                     if !retained.contains(id) {
                         project.items.remove(id);
+                        project.source_graphics.remove(id);
                     }
                     removed += 1;
                 }
@@ -1330,20 +1345,32 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
                 let ids = s.edit("Paste", |project, state| {
                     let mut ids = Vec::with_capacity(copied.len());
                     let mut remapped = BTreeMap::new();
-                    for item in &copied {
+                    for entry in &copied {
+                        let item = &entry.item;
                         let id = project.add_item(&item.name, item.label, item.kind.clone(), bin);
                         remapped.insert(item.id, id);
                         if let Some(pasted) = project.item_mut(id) {
                             pasted.metadata = item.metadata.clone();
                             pasted.split = item.split;
                         }
+                        if let Some(source_graphic) = &entry.source_graphic {
+                            project.source_graphics.insert(id, source_graphic.clone());
+                        }
                         ids.push(id);
                     }
                     for id in &ids {
-                        if let Some(ProjectItem { kind: ItemKind::Subclip { parent, .. }, .. }) = project.item_mut(*id)
-                            && let Some(new_parent) = remapped.get(parent)
-                        {
-                            *parent = *new_parent;
+                        let parent = match project.item(*id).map(|item| &item.kind) {
+                            Some(ItemKind::Subclip { parent, .. }) => Some(*parent),
+                            _ => None,
+                        };
+                        if let Some(parent) = parent {
+                            if let Some(new_parent) = remapped.get(&parent) {
+                                if let Some(ProjectItem { kind: ItemKind::Subclip { parent, .. }, .. }) = project.item_mut(*id) {
+                                    *parent = *new_parent;
+                                }
+                            } else if !project.items.contains_key(&parent) {
+                                return Err(crate::EngineError::Other(format!("cannot paste subclip: its parent item {} no longer exists", parent.0)));
+                            }
                         }
                     }
                     state.project_selection = ids.clone();
