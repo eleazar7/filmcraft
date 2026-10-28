@@ -201,7 +201,7 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
                     remember_stale_clipboard_media(app);
                     put_project_names_on_system_clipboard(app, ctx);
                 }
-                return result;
+                return report_project_command(app, result);
             }
             "edit.cut" => {
                 let result = app.session.execute("project.cut", json!({})).map_err(|e| e.to_string());
@@ -209,13 +209,14 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
                     remember_stale_clipboard_media(app);
                     put_project_names_on_system_clipboard(app, ctx);
                 }
-                return result;
+                return report_project_command(app, result);
             }
             "edit.clear" => {
                 app.ui.project_panel.rename = None;
                 let project_params = crate::panels::project_views::clear_params(&app.session.state.project_selection, app.ui.project_panel.selected_bin)
                     .ok_or("select an item or bin in the Project panel")?;
-                return app.session.execute("project.delete", project_params).map_err(|e| e.to_string());
+                let result = app.session.execute("project.delete", project_params).map_err(|e| e.to_string());
+                return report_project_command(app, result);
             }
             _ => {}
         }
@@ -596,7 +597,9 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
                 return r;
             }
             if app.ui.focused == PanelKind::Project {
-                return app.session.execute("project.paste", json!({"bin": app.import_bin().0})).map_err(|e| e.to_string());
+                let bin = app.import_bin().0;
+                let result = app.session.execute("project.paste", json!({"bin": bin})).map_err(|e| e.to_string());
+                return report_project_command(app, result);
             }
         }
         "file.recover" if params.as_object().is_none_or(|m| m.is_empty()) => {
@@ -660,6 +663,15 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
         put_clip_names_on_system_clipboard(app, ctx);
     }
     r
+}
+
+/// Put a focused Project command's error where the user can see it while preserving the error for
+/// callers that also report command failures.
+fn report_project_command(app: &mut FilmcraftApp, result: Result<Value, String>) -> Result<Value, String> {
+    if let Err(error) = &result {
+        app.ui.status = error.clone();
+    }
+    result
 }
 
 /// Run the command `id` chosen in the native menu bar, which takes the Edit menu's key
@@ -1302,16 +1314,32 @@ mod tests {
     fn project_cut_does_not_cut_timeline_clips() {
         let mut session = filmcraft_engine::Session::default();
         session.execute("file.openDemoProject", json!({})).unwrap();
-        let project_item = *session.project.items.keys().next().unwrap();
+        let project_item = session
+            .active_sequence()
+            .unwrap()
+            .all_tracks()
+            .flat_map(|track| &track.items)
+            .find_map(|clip| session.project.item(clip.item).and_then(filmcraft_project::ProjectItem::as_media).map(|_| clip.item))
+            .unwrap();
         let timeline_selection = session.state.selection.clone();
         session.state.project_selection = vec![project_item];
         let mut app = FilmcraftApp::new(session);
         app.ui.focused = PanelKind::Project;
 
         invoke(&mut app, &egui::Context::default(), "edit.cut", json!({})).unwrap();
-        assert!(app.session.project.item(project_item).is_none());
+        let retained = app.session.project.item(project_item).and_then(filmcraft_project::ProjectItem::as_media).unwrap();
+        assert!(!retained.offline, "Cut must keep referenced Timeline media online");
+        assert!(app.session.project.root.parent_of(project_item).is_none(), "the cut item must leave its Project bin");
         assert_eq!(app.session.state.selection, timeline_selection, "the Timeline selection must not be cut");
         assert_eq!(app.session.state.project_clipboard.len(), 1);
+    }
+
+    #[test]
+    fn focused_project_command_errors_are_visible_in_the_status_bar() {
+        let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
+        app.ui.focused = PanelKind::Project;
+        let error = invoke(&mut app, &egui::Context::default(), "edit.copy", json!({})).unwrap_err();
+        assert_eq!(app.ui.status, error);
     }
 
     /// A clipboard image is premultiplied inside `Color32`. The PNG writer expects straight
