@@ -3,6 +3,14 @@
 The egui frontend draws panels and dialogs, and dispatches project changes through the engine.
 Interactive controls keep stable automation ids regardless of the interface language.
 
+## Focused Edit commands
+
+Edit commands follow the focused panel. In the Project panel, Select All selects the items shown
+in the current bin, Copy and Paste duplicate Project items into the shown bin, and Clear/Delete
+removes the Project selection; they do not change Timeline clips. A focused text field owns its
+normal text-editing commands. This routing also applies to the native macOS Edit menu, which
+receives its key equivalents before the panel sees a key press.
+
 ## Control input limits
 
 The control channel bounds `ui.click` to 10 clicks and `ui.drag` to 1024 movement steps (#2784).
