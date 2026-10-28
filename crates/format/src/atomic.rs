@@ -128,9 +128,17 @@ fn atomic_write_new_with(path: &Path, write: impl FnOnce(&mut File) -> io::Resul
 /// real synchronization errors such as disconnection or device failure are reported.
 #[cfg(unix)]
 fn sync_dir(dir: &Path) -> io::Result<()> {
-    match File::open(dir) {
+    sync_opened_dir(File::open(dir))
+}
+
+/// Apply the platform capability exceptions for an attempted directory handle while preserving
+/// every other open error.
+#[cfg(unix)]
+fn sync_opened_dir(opened: io::Result<File>) -> io::Result<()> {
+    match opened {
         Ok(directory) => sync_if_supported(&directory),
-        Err(_) => Ok(()),
+        Err(error) if matches!(error.kind(), io::ErrorKind::PermissionDenied | io::ErrorKind::Unsupported) => Ok(()),
+        Err(error) => Err(error),
     }
 }
 
@@ -158,6 +166,15 @@ mod tests {
         assert!(sync_with_fallback(Err(unsupported()), || Err(unsupported())).is_ok());
         let error = sync_with_fallback(Err(unsupported()), || Err(io::Error::new(io::ErrorKind::PermissionDenied, "denied"))).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn directory_open_ignores_only_capability_errors() {
+        let denied = io::Error::new(io::ErrorKind::PermissionDenied, "write-only directory");
+        assert!(sync_opened_dir(Err(denied)).is_ok());
+        let missing = io::Error::new(io::ErrorKind::NotFound, "share disconnected");
+        assert_eq!(sync_opened_dir(Err(missing)).unwrap_err().kind(), io::ErrorKind::NotFound);
     }
 
     fn tmpdir(tag: &str) -> PathBuf {
