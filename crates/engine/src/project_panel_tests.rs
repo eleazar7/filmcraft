@@ -307,6 +307,40 @@ fn select_all_selects_every_project_item() {
 }
 
 #[test]
+fn project_copy_pastes_snapshots_into_the_chosen_bin() {
+    let mut s = demo();
+    let source = *s.project.items.keys().next().unwrap();
+    let original = s.project.item(source).unwrap().clone();
+    let bin = s.execute("file.newBin", json!({"name": "Copies"})).unwrap()["bin"].as_u64().unwrap();
+    s.execute("project.select", json!({"items": [source.0]})).unwrap();
+    assert_eq!(s.execute("project.copy", json!({})).unwrap()["copied"], json!(1));
+
+    // Changing the selection does not change what Paste copied.
+    s.execute("project.select", json!({"items": []})).unwrap();
+    let pasted = s.execute("project.paste", json!({"bin": bin})).unwrap()["items"][0].as_u64().unwrap();
+    let pasted = filmcraft_project::ItemId(pasted);
+    assert_ne!(pasted, source);
+    let item = s.project.item(pasted).unwrap();
+    assert_eq!(item.name, original.name);
+    assert_eq!(item.label, original.label);
+    assert_eq!(item.kind, original.kind);
+    assert_eq!(item.metadata, original.metadata);
+    assert_eq!(item.split, original.split);
+    assert_eq!(s.state.project_selection, vec![pasted]);
+    assert!(
+        s.project
+            .root
+            .find_bin(filmcraft_project::BinId(bin))
+            .unwrap()
+            .children
+            .iter()
+            .any(|entry| { matches!(entry, filmcraft_project::BinEntry::Item(id) if *id == pasted) })
+    );
+    assert_eq!(s.undo().as_deref(), Some("Paste"));
+    assert!(s.project.item(pasted).is_none());
+}
+
+#[test]
 fn select_all_in_a_bin_skips_closed_bins_and_other_bins() {
     // #456: Cmd+A in the Project panel selected every item in the project, closed bins included
     let mut s = demo();
