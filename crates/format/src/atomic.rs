@@ -1,4 +1,5 @@
-//! Crash-safe file replacement.
+//! Crash-safe file replacement. Filesystems that cannot provide a durability sync (some SMB
+//! shares) still get same-directory atomic replacement; all other I/O errors remain failures.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
@@ -23,6 +24,23 @@ fn parent_dir(path: &Path) -> PathBuf {
     }
 }
 
+/// SMB shares on macOS can write and atomically rename files but return ENOTSUP for `fsync`.
+/// Durability cannot be strengthened on such a filesystem, so accept only that precise lack of
+/// capability. Permission, space, disconnect and every other error still fail the save.
+fn sync_if_supported(file: &File) -> io::Result<()> {
+    tolerate_unsupported(file.sync_all())
+}
+
+fn tolerate_unsupported(result: io::Result<()>) -> io::Result<()> {
+    match result {
+        Ok(()) => Ok(()),
+        // Rust currently classifies macOS ENOTSUP (45), returned by SMB `fsync`, as
+        // `Uncategorized` rather than `Unsupported`, so retain the platform code too.
+        Err(error) if error.kind() == io::ErrorKind::Unsupported || cfg!(target_os = "macos") && error.raw_os_error() == Some(45) => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
 /// Replace `path` with `data` atomically and durably:
 /// write `data` to a temp file in the same directory, `fsync` it, rename it over `path`, then
 /// `fsync` the directory so the rename itself survives a power cut. If anything fails the temp file
@@ -44,7 +62,7 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> io::Result<()> {
                 f.set_permissions(permissions.clone())?;
             }
             f.write_all(data)?;
-            f.sync_all()?;
+            sync_if_supported(&f)?;
         }
         fs::rename(&tmp, path)
     })();
@@ -61,7 +79,10 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> io::Result<()> {
 /// A write failure leaves no partial final file; temporary-file cleanup is best effort.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn atomic_write_new(path: &Path, data: &[u8]) -> io::Result<()> {
-    atomic_write_new_with(path, |file| file.write_all(data).and_then(|_| file.sync_all()))
+    atomic_write_new_with(path, |file| {
+        file.write_all(data)?;
+        sync_if_supported(file)
+    })
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -97,6 +118,17 @@ fn sync_dir(dir: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unsupported_durability_sync_is_the_only_ignored_sync_error() {
+        let unsupported = io::Error::new(io::ErrorKind::Unsupported, "network share cannot fsync");
+        let denied = io::Error::new(io::ErrorKind::PermissionDenied, "denied");
+        assert!(tolerate_unsupported(Err(unsupported)).is_ok());
+        if cfg!(target_os = "macos") {
+            assert!(tolerate_unsupported(Err(io::Error::from_raw_os_error(45))).is_ok());
+        }
+        assert_eq!(tolerate_unsupported(Err(denied)).unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+    }
 
     fn tmpdir(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("filmcraft-atomic-{tag}-{}", std::process::id()));
