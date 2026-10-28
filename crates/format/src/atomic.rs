@@ -56,6 +56,7 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
+/// Preserve an I/O error's category while adding the save stage and affected path.
 fn with_stage(error: io::Error, action: &str, path: &Path) -> io::Error {
     io::Error::new(error.kind(), format!("{action} {}: {error}", path.display()))
 }
@@ -102,6 +103,8 @@ fn sync_file(file: &File, path: &Path) -> io::Result<()> {
     tolerate_unsupported_sync(file.sync_all(), path).map_err(|e| with_stage(e, "syncing staging file", path))
 }
 
+/// Accept only the filesystem's explicit "durable sync unsupported" result; every real I/O or
+/// storage error still aborts publication.
 fn tolerate_unsupported_sync(result: io::Result<()>, path: &Path) -> io::Result<()> {
     match result {
         Err(error) if unsupported_sync(&error) => {
@@ -112,6 +115,7 @@ fn tolerate_unsupported_sync(result: io::Result<()>, path: &Path) -> io::Result<
     }
 }
 
+/// Whether this platform reports that the writable filesystem cannot provide durable file sync.
 fn unsupported_sync(error: &io::Error) -> bool {
     error.kind() == io::ErrorKind::Unsupported
         // macOS reports ENOTSUP from fsync on writable SMB shares but classifies it as
