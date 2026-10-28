@@ -407,6 +407,31 @@ fn project_copy_and_cut_keep_source_graphics_consistent() {
 }
 
 #[test]
+fn project_cut_retains_the_complete_parent_chain_of_an_uncut_nested_subclip() {
+    let mut s = demo();
+    let media = media(&s)[0];
+    let parent = std::sync::Arc::make_mut(&mut s.project).add_item(
+        "Parent subclip",
+        Label::Iris,
+        ItemKind::Subclip { parent: media, range: TimeRange::new(Tick::ZERO, Tick(200)), restrict_trims: false },
+        None,
+    );
+    let child = std::sync::Arc::make_mut(&mut s.project).add_item(
+        "Uncut child",
+        Label::Iris,
+        ItemKind::Subclip { parent, range: TimeRange::new(Tick::ZERO, Tick(100)), restrict_trims: false },
+        None,
+    );
+
+    s.state.project_selection = vec![media, parent];
+    s.execute("project.cut", json!({})).unwrap();
+
+    assert!(s.project.item(media).is_some(), "the uncut child's root media must remain resolvable");
+    assert!(s.project.item(parent).is_some(), "the uncut child's direct parent must remain resolvable");
+    assert!(matches!(s.project.item(child).map(|item| &item.kind), Some(ItemKind::Subclip { parent: id, .. }) if *id == parent));
+}
+
+#[test]
 fn select_all_in_a_bin_skips_closed_bins_and_other_bins() {
     // #456: Cmd+A in the Project panel selected every item in the project, closed bins included
     let mut s = demo();

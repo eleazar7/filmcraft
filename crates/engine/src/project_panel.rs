@@ -30,6 +30,24 @@ use serde_json::{Value, json};
 use crate::commands::{CommandSpec, always, bad, bool_p, f64_p, has_project_selection, item_p, str_p, u64_p};
 use crate::{Result, Session};
 
+/// Retain an item and its bounded parent chain so an uncut subclip or Timeline clip cannot be
+/// disconnected when another Project-panel item is cut. The local seen-set also stops malformed
+/// cyclic project data without looping.
+fn retain_item_and_parents(project: &Project, start: ItemId, retained: &mut BTreeSet<ItemId>) {
+    let mut id = start;
+    let mut seen = BTreeSet::new();
+    for _ in 0..16 {
+        if !seen.insert(id) {
+            break;
+        }
+        retained.insert(id);
+        match project.item(id).map(|item| &item.kind) {
+            Some(ItemKind::Subclip { parent, .. }) => id = *parent,
+            _ => break,
+        }
+    }
+}
+
 // ------------------------------------------------------------------------------------ settings
 
 /// The Project panel's view.
@@ -1295,22 +1313,13 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             for sequence in s.project.sequences() {
                 if let Some(sequence) = sequence.as_sequence() {
                     for clip in sequence.all_tracks().flat_map(|track| &track.items) {
-                        let mut id = clip.item;
-                        for _ in 0..16 {
-                            retained.insert(id);
-                            match s.project.item(id).map(|item| &item.kind) {
-                                Some(ItemKind::Subclip { parent, .. }) => id = *parent,
-                                _ => break,
-                            }
-                        }
+                        retain_item_and_parents(&s.project, clip.item, &mut retained);
                     }
                 }
             }
             for item in s.project.items.values() {
-                if !selected.contains(&item.id)
-                    && let ItemKind::Subclip { parent, .. } = item.kind
-                {
-                    retained.insert(parent);
+                if !selected.contains(&item.id) {
+                    retain_item_and_parents(&s.project, item.id, &mut retained);
                 }
             }
             let removed = s.edit("Cut", |project, state| {
