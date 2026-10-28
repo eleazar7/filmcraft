@@ -191,11 +191,29 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
     if app.ui.focused == PanelKind::Project {
         match id {
             "edit.selectAll" => {
-                let (command, project_params) = crate::panels::project::select_all_command(app);
-                return app.session.execute(&command, project_params).map_err(|e| e.to_string());
+                let (command, project_params, bins) = crate::panels::project::select_all_command(app);
+                let result = app.session.execute(&command, project_params).map_err(|e| e.to_string());
+                if result.is_ok() {
+                    app.ui.project_panel.selected_bin = match bins.as_slice() {
+                        [bin] => Some(*bin),
+                        _ => None,
+                    };
+                    app.ui.project_panel.selected_bins = bins;
+                }
+                return result;
             }
-            "edit.deselectAll" => return app.session.execute("project.deselectAll", json!({})).map_err(|e| e.to_string()),
+            "edit.deselectAll" => {
+                let result = app.session.execute("project.deselectAll", json!({})).map_err(|e| e.to_string());
+                if result.is_ok() {
+                    app.ui.project_panel.selected_bin = None;
+                    app.ui.project_panel.selected_bins.clear();
+                }
+                return result;
+            }
             "edit.copy" => {
+                if app.ui.project_panel.selected_bin.is_some() || !app.ui.project_panel.selected_bins.is_empty() {
+                    return report_project_command(app, Err("copying bins is not supported yet".into()));
+                }
                 let result = app.session.execute("project.copy", json!({})).map_err(|e| e.to_string());
                 if result.is_ok() {
                     remember_stale_clipboard_media(app);
@@ -204,6 +222,9 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
                 return report_project_command(app, result);
             }
             "edit.cut" => {
+                if app.ui.project_panel.selected_bin.is_some() || !app.ui.project_panel.selected_bins.is_empty() {
+                    return report_project_command(app, Err("cutting bins is not supported yet".into()));
+                }
                 let result = app.session.execute("project.cut", json!({})).map_err(|e| e.to_string());
                 if result.is_ok() {
                     remember_stale_clipboard_media(app);
@@ -213,9 +234,17 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
             }
             "edit.clear" => {
                 app.ui.project_panel.rename = None;
-                let project_params = crate::panels::project_views::clear_params(&app.session.state.project_selection, app.ui.project_panel.selected_bin)
-                    .ok_or("select an item or bin in the Project panel")?;
+                let project_params = crate::panels::project_views::clear_params(
+                    &app.session.state.project_selection,
+                    app.ui.project_panel.selected_bin,
+                    &app.ui.project_panel.selected_bins,
+                )
+                .ok_or("select an item or bin in the Project panel")?;
                 let result = app.session.execute("project.delete", project_params).map_err(|e| e.to_string());
+                if result.is_ok() {
+                    app.ui.project_panel.selected_bin = None;
+                    app.ui.project_panel.selected_bins.clear();
+                }
                 return report_project_command(app, result);
             }
             _ => {}
@@ -875,7 +904,9 @@ pub fn menu_items(app: &FilmcraftApp) -> Vec<MenuItem> {
                 "edit.copy" | "edit.cut" => it.enabled = !app.session.state.project_selection.is_empty(),
                 "edit.paste" => it.enabled = true,
                 "edit.clear" => {
-                    it.enabled = !app.session.state.project_selection.is_empty() || app.ui.project_panel.selected_bin.is_some();
+                    it.enabled = !app.session.state.project_selection.is_empty()
+                        || app.ui.project_panel.selected_bin.is_some()
+                        || !app.ui.project_panel.selected_bins.is_empty();
                 }
                 _ => {}
             }
@@ -1285,10 +1316,13 @@ mod tests {
         app.ui.focused = PanelKind::Project;
         let first = *app.session.project.items.keys().next().unwrap();
         app.ui.project_panel.bin = app.session.project.root.parent_of(first).map(|bin| bin.0);
+        let selected_bin = app.ui.project_panel.bin.unwrap();
+        let child_bin = app.session.execute("file.newBin", json!({"name": "Selected Bin", "parent": selected_bin})).unwrap()["bin"].as_u64().unwrap();
         let ctx = egui::Context::default();
 
         invoke(&mut app, &ctx, "edit.selectAll", json!({})).unwrap();
         assert!(!app.session.state.project_selection.is_empty());
+        assert_eq!(app.ui.project_panel.selected_bins, vec![child_bin]);
         assert!(app.session.state.selection.is_empty(), "the Timeline must stay untouched");
         let items = menu_items(&app);
         for command in ["edit.copy", "edit.cut", "edit.paste", "edit.clear"] {
@@ -1297,6 +1331,8 @@ mod tests {
 
         let source = app.session.state.project_selection[0];
         app.session.state.project_selection = vec![source];
+        app.ui.project_panel.selected_bin = None;
+        app.ui.project_panel.selected_bins.clear();
         let before = app.session.project.items.len();
         invoke(&mut app, &ctx, "edit.copy", json!({})).unwrap();
         invoke(&mut app, &ctx, "edit.paste", json!({})).unwrap();
