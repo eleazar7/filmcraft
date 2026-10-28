@@ -24,21 +24,36 @@ fn parent_dir(path: &Path) -> PathBuf {
     }
 }
 
-/// SMB shares on macOS can write and atomically rename files but return ENOTSUP for `fsync`.
-/// Durability cannot be strengthened on such a filesystem, so accept only that precise lack of
-/// capability. Permission, space, disconnect and every other error still fail the save.
+/// Sync a staging file before publication. Rust requests `F_FULLFSYNC` on macOS; SMB shares may
+/// reject that stronger operation while supporting plain POSIX `fsync`, so retry it safely through
+/// rustix. Only a filesystem that supports neither operation may omit the durability guarantee.
 fn sync_if_supported(file: &File) -> io::Result<()> {
-    tolerate_unsupported(file.sync_all())
+    #[cfg(target_os = "macos")]
+    return sync_with_fallback(file.sync_all(), || rustix::fs::fsync(file).map_err(io::Error::from));
+
+    #[cfg(not(target_os = "macos"))]
+    file.sync_all()
 }
 
-fn tolerate_unsupported(result: io::Result<()>) -> io::Result<()> {
-    match result {
+/// Run a weaker synchronization fallback only when the primary operation is unsupported. A real
+/// error from either operation remains a failed save.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn sync_with_fallback(primary: io::Result<()>, fallback: impl FnOnce() -> io::Result<()>) -> io::Result<()> {
+    match primary {
         Ok(()) => Ok(()),
-        // Rust currently classifies macOS ENOTSUP (45), returned by SMB `fsync`, as
-        // `Uncategorized` rather than `Unsupported`, so retain the platform code too.
-        Err(error) if error.kind() == io::ErrorKind::Unsupported || cfg!(target_os = "macos") && error.raw_os_error() == Some(45) => Ok(()),
+        Err(error) if unsupported_sync(&error) => match fallback() {
+            Ok(()) => Ok(()),
+            Err(fallback_error) if unsupported_sync(&fallback_error) => Ok(()),
+            Err(fallback_error) => Err(fallback_error),
+        },
         Err(error) => Err(error),
     }
+}
+
+/// Recognize only an explicit unsupported-operation result. Rust currently categorizes macOS
+/// `ENOTSUP` (45) as `Uncategorized`, so retain that platform code as well.
+fn unsupported_sync(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::Unsupported || cfg!(target_os = "macos") && error.raw_os_error() == Some(45)
 }
 
 /// Replace `path` with `data` atomically and durably:
@@ -70,7 +85,7 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> io::Result<()> {
         let _ = fs::remove_file(&tmp);
         return Err(e);
     }
-    sync_dir(&parent_dir(path));
+    sync_dir(&parent_dir(path))?;
     Ok(())
 }
 
@@ -104,15 +119,25 @@ fn atomic_write_new_with(path: &Path, write: impl FnOnce(&mut File) -> io::Resul
     let mut staged = tempfile::NamedTempFile::new_in(&dir)?;
     write(staged.as_file_mut())?;
     let _published = staged.persist_noclobber(path).map_err(|e| e.error)?;
-    sync_dir(&dir);
+    sync_dir(&dir)?;
     Ok(())
 }
 
-/// Best-effort directory sync; directory handles are not uniformly readable or syncable.
-fn sync_dir(dir: &Path) {
-    if let Ok(d) = File::open(dir) {
-        let _ = d.sync_all();
+/// Sync the containing directory so publication survives a crash. Opening a directory as a file is
+/// not uniformly available (and write-only directories intentionally reject it), but once opened,
+/// real synchronization errors such as disconnection or device failure are reported.
+#[cfg(unix)]
+fn sync_dir(dir: &Path) -> io::Result<()> {
+    match File::open(dir) {
+        Ok(directory) => sync_if_supported(&directory),
+        Err(_) => Ok(()),
     }
+}
+
+/// Windows does not expose ordinary directories as syncable `File` handles through `std`.
+#[cfg(not(unix))]
+fn sync_dir(_dir: &Path) -> io::Result<()> {
+    Ok(())
 }
 
 #[cfg(test)]
@@ -120,14 +145,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn unsupported_durability_sync_is_the_only_ignored_sync_error() {
+    fn unsupported_primary_sync_uses_a_fallback_and_real_errors_still_fail() {
         let unsupported = io::Error::new(io::ErrorKind::Unsupported, "network share cannot fsync");
         let denied = io::Error::new(io::ErrorKind::PermissionDenied, "denied");
-        assert!(tolerate_unsupported(Err(unsupported)).is_ok());
-        if cfg!(target_os = "macos") {
-            assert!(tolerate_unsupported(Err(io::Error::from_raw_os_error(45))).is_ok());
-        }
-        assert_eq!(tolerate_unsupported(Err(denied)).unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+        assert!(sync_with_fallback(Err(unsupported), || Ok(())).is_ok());
+        assert_eq!(sync_with_fallback(Err(denied), || Ok(())).unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+    }
+
+    #[test]
+    fn unsupported_fallback_is_accepted_but_other_fallback_errors_are_reported() {
+        let unsupported = || io::Error::new(io::ErrorKind::Unsupported, "unsupported");
+        assert!(sync_with_fallback(Err(unsupported()), || Err(unsupported())).is_ok());
+        let error = sync_with_fallback(Err(unsupported()), || Err(io::Error::new(io::ErrorKind::PermissionDenied, "denied"))).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
     }
 
     fn tmpdir(tag: &str) -> PathBuf {
