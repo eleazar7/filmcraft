@@ -84,75 +84,78 @@ fn label_color(app: &FilmcraftApp, l: filmcraft_project::Label) -> Color32 {
     Color32::from_rgb(c[0], c[1], c[2])
 }
 
-/// Items in display order for a view (keyboard navigation): the list's expanded rows, or the icon
-/// / freeform cards.
-pub fn items_in_view(app: &FilmcraftApp, v: &View, filter: &str) -> Vec<ItemId> {
+/// One visible Project-panel row or card.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Entry {
+    Bin(BinId),
+    Item(ItemId),
+}
+
+/// Entries in display order for keyboard navigation.
+pub fn entries_in_view(app: &FilmcraftApp, v: &View, filter: &str) -> Vec<Entry> {
     let p = &app.session.project;
     let Some(bin) = p.root.find_bin(v.bin) else { return Vec::new() };
     match v.mode {
         ViewMode::List => {
             let sort = &app.session.prefs.project_panel.view.sort;
             let mut out = Vec::new();
-            fn walk(app: &FilmcraftApp, b: &Bin, sort: &SortSpec, filter: &str, out: &mut Vec<ItemId>) {
+            fn walk(app: &FilmcraftApp, b: &Bin, sort: &SortSpec, filter: &str, out: &mut Vec<Entry>) {
                 let (bins, items) = pp::bin_children(&app.session.project, b, sort);
                 for bid in bins {
+                    out.push(Entry::Bin(bid));
                     if (app.ui.expanded_bins.contains(&bid.0) || !filter.is_empty())
                         && let Some(sub) = app.session.project.root.find_bin(bid)
                     {
                         walk(app, sub, sort, filter, out);
                     }
                 }
-                out.extend(items.into_iter().filter(|i| matches_filter(app, *i, filter)));
+                out.extend(items.into_iter().filter(|i| matches_filter(app, *i, filter)).map(Entry::Item));
             }
             walk(app, bin, sort, filter, &mut out);
             out
         }
-        ViewMode::Icon => icon_order(app, bin, filter),
-        ViewMode::Freeform => {
-            let mut ids: Vec<ItemId> = Vec::new();
-            for e in &bin.children {
-                if let BinEntry::Item(i) = e
-                    && matches_filter(app, *i, filter)
-                {
-                    ids.push(*i);
-                }
+        ViewMode::Icon => {
+            let mut out = Vec::new();
+            if filter.is_empty() {
+                out.extend(bin.children.iter().filter_map(|entry| match entry {
+                    BinEntry::Bin(bin) => Some(Entry::Bin(bin.id)),
+                    BinEntry::Item(_) => None,
+                }));
             }
-            ids
+            out.extend(icon_order(app, bin, filter).into_iter().map(Entry::Item));
+            out
         }
+        ViewMode::Freeform => bin
+            .children
+            .iter()
+            .filter_map(|entry| match entry {
+                BinEntry::Item(id) if matches_filter(app, *id, filter) => Some(Entry::Item(*id)),
+                BinEntry::Item(_) | BinEntry::Bin(_) => None,
+            })
+            .collect(),
     }
+}
+
+/// Items in display order for a view.
+pub fn items_in_view(app: &FilmcraftApp, v: &View, filter: &str) -> Vec<ItemId> {
+    entries_in_view(app, v, filter)
+        .into_iter()
+        .filter_map(|entry| match entry {
+            Entry::Item(id) => Some(id),
+            Entry::Bin(_) => None,
+        })
+        .collect()
 }
 
 /// Bins displayed by a view, in display order. Freeform currently has no bin cards.
 pub fn bins_in_view(app: &FilmcraftApp, v: &View, filter: &str) -> Vec<u64> {
-    let Some(bin) = app.session.project.root.find_bin(v.bin) else { return Vec::new() };
-    match v.mode {
-        ViewMode::List => {
-            let sort = &app.session.prefs.project_panel.view.sort;
-            let mut out = Vec::new();
-            fn walk(app: &FilmcraftApp, b: &Bin, sort: &SortSpec, filter: &str, out: &mut Vec<u64>) {
-                let (bins, _) = pp::bin_children(&app.session.project, b, sort);
-                for id in bins {
-                    out.push(id.0);
-                    if (app.ui.expanded_bins.contains(&id.0) || !filter.is_empty())
-                        && let Some(sub) = app.session.project.root.find_bin(id)
-                    {
-                        walk(app, sub, sort, filter, out);
-                    }
-                }
-            }
-            walk(app, bin, sort, filter, &mut out);
-            out
-        }
-        ViewMode::Icon if filter.is_empty() => bin
-            .children
-            .iter()
-            .filter_map(|entry| match entry {
-                BinEntry::Bin(bin) => Some(bin.id.0),
-                BinEntry::Item(_) => None,
-            })
-            .collect(),
-        ViewMode::Icon | ViewMode::Freeform => Vec::new(),
-    }
+    entries_in_view(app, v, filter)
+        .into_iter()
+        .filter_map(|entry| match entry {
+            Entry::Bin(id) => Some(id.0),
+            Entry::Item(_) => None,
+        })
+        .collect()
 }
 
 /// Icon view order: Sort Icons column, else the bin's order (User Order). A search shows matches
