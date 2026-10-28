@@ -211,7 +211,9 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
                 return result;
             }
             "edit.copy" => {
-                if app.ui.project_panel.selected_bin.is_some() || !app.ui.project_panel.selected_bins.is_empty() {
+                if app.session.state.project_selection.is_empty()
+                    && (app.ui.project_panel.selected_bin.is_some() || !app.ui.project_panel.selected_bins.is_empty())
+                {
                     return report_project_command(app, Err("copying bins is not supported yet".into()));
                 }
                 let result = app.session.execute("project.copy", json!({})).map_err(|e| e.to_string());
@@ -222,7 +224,9 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
                 return report_project_command(app, result);
             }
             "edit.cut" => {
-                if app.ui.project_panel.selected_bin.is_some() || !app.ui.project_panel.selected_bins.is_empty() {
+                if app.session.state.project_selection.is_empty()
+                    && (app.ui.project_panel.selected_bin.is_some() || !app.ui.project_panel.selected_bins.is_empty())
+                {
                     return report_project_command(app, Err("cutting bins is not supported yet".into()));
                 }
                 let result = app.session.execute("project.cut", json!({})).map_err(|e| e.to_string());
@@ -1331,8 +1335,6 @@ mod tests {
 
         let source = app.session.state.project_selection[0];
         app.session.state.project_selection = vec![source];
-        app.ui.project_panel.selected_bin = None;
-        app.ui.project_panel.selected_bins.clear();
         let before = app.session.project.items.len();
         invoke(&mut app, &ctx, "edit.copy", json!({})).unwrap();
         invoke(&mut app, &ctx, "edit.paste", json!({})).unwrap();
@@ -1341,6 +1343,8 @@ mod tests {
         assert_ne!(pasted, source);
         assert!(app.session.state.selection.is_empty(), "Paste must not put a clip on the Timeline");
 
+        app.ui.project_panel.selected_bin = None;
+        app.ui.project_panel.selected_bins.clear();
         invoke(&mut app, &ctx, "edit.clear", json!({})).unwrap();
         assert!(app.session.project.item(pasted).is_none());
         assert!(app.session.project.item(source).is_some());
