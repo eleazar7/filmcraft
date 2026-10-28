@@ -765,7 +765,7 @@ fn put_clip_names_on_system_clipboard(app: &FilmcraftApp, ctx: &egui::Context) {
 /// Put harmless text on the OS clipboard so platforms that suppress an empty clipboard's Paste
 /// event still deliver Ctrl/Cmd+V after Project-panel Copy.
 fn put_project_names_on_system_clipboard(app: &FilmcraftApp, ctx: &egui::Context) {
-    let names: Vec<&str> = app.session.state.project_clipboard.iter().map(|item| item.name.as_str()).collect();
+    let names: Vec<&str> = app.session.state.project_clipboard.iter().map(|entry| entry.item.name.as_str()).collect();
     if names.is_empty() {
         return;
     }
