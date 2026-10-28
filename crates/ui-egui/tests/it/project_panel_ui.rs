@@ -564,6 +564,44 @@ fn arrow_keys_navigate_expand_and_collapse_bins() {
 }
 
 #[test]
+fn shift_arrow_keeps_visible_children_selected_when_the_range_crosses_a_bin() {
+    use filmcraft_ui_egui::panels::project_views::Entry;
+
+    let mut d = project_driver();
+    d.exec("project.view.set", json!({"view": "list"}));
+    let (bin, _) = d.footage();
+    d.app().ui.expanded_bins = vec![bin];
+    d.frames(3);
+    let view = filmcraft_ui_egui::panels::project::view_of(d.app(), filmcraft_ui_egui::panels::project::Inst::Main);
+    let entries = filmcraft_ui_egui::panels::project_views::entries_in_view(d.app(), &view, "");
+    let Some(last) = entries.last().copied() else { return };
+    d.app().session.state.project_selection.clear();
+    d.app().ui.project_panel.selected_bins.clear();
+    match last {
+        Entry::Item(id) => {
+            d.app().session.state.project_selection.push(id);
+            d.app().ui.project_panel.anchor = Some(id.0);
+            d.app().ui.project_panel.anchor_bin = false;
+        }
+        Entry::Bin(id) => {
+            d.app().ui.project_panel.selected_bin = Some(id.0);
+            d.app().ui.project_panel.selected_bins.push(id.0);
+            d.app().ui.project_panel.anchor = Some(id.0);
+            d.app().ui.project_panel.anchor_bin = true;
+        }
+    }
+    for _ in 1..entries.len() {
+        d.ok("ui.menu.invoke", json!({"id": "projectPanel.extendUp"}));
+    }
+    for entry in entries {
+        match entry {
+            Entry::Item(id) => assert!(d.app().session.state.project_selection.contains(&id), "visible item {} was dropped", id.0),
+            Entry::Bin(id) => assert!(d.app().ui.project_panel.selected_bins.contains(&id.0), "visible bin {} was dropped", id.0),
+        }
+    }
+}
+
+#[test]
 fn select_all_takes_only_the_shown_bin() {
     // #456: Cmd+A selected every item in the project, closed bins and other tabs included
     let mut d = project_driver();

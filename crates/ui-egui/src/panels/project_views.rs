@@ -192,32 +192,108 @@ pub fn click_modifiers(ui: &egui::Ui) -> egui::Modifiers {
     })
 }
 
-/// The selection after a click on `id`. Shift selects the range from `anchor` to `id` in the
-/// shown `order` (plus the current selection with Ctrl/Cmd too), Ctrl/Cmd toggles `id`, a plain
-/// click selects only `id`. Without a usable anchor Shift acts like a plain click.
-fn click_selection(current: &[ItemId], order: &[ItemId], anchor: Option<ItemId>, id: ItemId, shift: bool, command: bool) -> Vec<ItemId> {
+/// The mixed bin/item selection after a click. Shift selects the continuous visible range from
+/// `anchor`; Ctrl/Cmd toggles one entry; a plain click selects only that entry.
+fn click_selection(
+    current_items: &[ItemId],
+    current_bins: &[u64],
+    order: &[Entry],
+    anchor: Option<Entry>,
+    clicked: Entry,
+    shift: bool,
+    command: bool,
+) -> (Vec<ItemId>, Vec<u64>) {
+    let mut selected: Vec<Entry> = current_bins.iter().copied().map(|id| Entry::Bin(BinId(id))).collect();
+    selected.extend(current_items.iter().copied().map(Entry::Item));
     if shift {
-        let pos = |x: ItemId| order.iter().position(|o| *o == x);
-        if let (Some(a), Some(b)) = (anchor.and_then(pos), pos(id)) {
-            let mut sel = if command { current.to_vec() } else { Vec::new() };
-            for i in order.get(a.min(b)..=a.max(b)).unwrap_or_default() {
-                if !sel.contains(i) {
-                    sel.push(*i);
+        let pos = |entry: Entry| order.iter().position(|shown| *shown == entry);
+        if let (Some(a), Some(b)) = (anchor.and_then(pos), pos(clicked)) {
+            if !command {
+                selected.clear();
+            }
+            for entry in order.get(a.min(b)..=a.max(b)).unwrap_or_default() {
+                if !selected.contains(entry) {
+                    selected.push(*entry);
                 }
             }
-            return sel;
+        } else {
+            selected = vec![clicked];
         }
     } else if command {
-        let mut sel = current.to_vec();
-        match sel.iter().position(|x| *x == id) {
+        match selected.iter().position(|entry| *entry == clicked) {
             Some(p) => {
-                sel.remove(p);
+                selected.remove(p);
             }
-            None => sel.push(id),
+            None => selected.push(clicked),
         }
-        return sel;
+    } else {
+        selected = vec![clicked];
     }
-    vec![id]
+    let items = selected
+        .iter()
+        .filter_map(|entry| match entry {
+            Entry::Item(id) => Some(*id),
+            Entry::Bin(_) => None,
+        })
+        .collect();
+    let bins = selected
+        .iter()
+        .filter_map(|entry| match entry {
+            Entry::Bin(id) => Some(id.0),
+            Entry::Item(_) => None,
+        })
+        .collect();
+    (items, bins)
+}
+
+fn scroll_selected_into_view(app: &mut FilmcraftApp, ui: &egui::Ui, entry: Entry, rect: Rect) {
+    let pending = match entry {
+        Entry::Item(id) => app.ui.project_panel.scroll_to_item == Some(id.0),
+        Entry::Bin(id) => app.ui.project_panel.scroll_to_bin == Some(id.0),
+    };
+    if pending {
+        // The List view scrolls on both axes. Asking egui to reveal the entire wide row also
+        // recentres it horizontally, making every arrow press slide the columns to the right.
+        // A thin target at the currently visible x position moves only the vertical axis.
+        let x = ui.clip_rect().center().x;
+        let vertical_target = Rect::from_min_max(pos2(x, rect.min.y), pos2(x, rect.max.y));
+        ui.scroll_to_rect(vertical_target, Some(egui::Align::Center));
+        app.ui.project_panel.scroll_to_item = None;
+        app.ui.project_panel.scroll_to_bin = None;
+    }
+}
+
+fn selection_anchor(app: &FilmcraftApp) -> Option<Entry> {
+    app.ui.project_panel.anchor.map(|id| if app.ui.project_panel.anchor_bin { Entry::Bin(BinId(id)) } else { Entry::Item(ItemId(id)) })
+}
+
+fn apply_click_selection(app: &mut FilmcraftApp, ui: &egui::Ui, v: &View, clicked: Entry, actions: &mut Actions) {
+    let mods = click_modifiers(ui);
+    let order = if mods.shift { entries_in_view(app, v, &app.ui.project_search.to_ascii_lowercase()) } else { Vec::new() };
+    let (items, bins) = click_selection(
+        &app.session.state.project_selection,
+        &app.ui.project_panel.selected_bins,
+        &order,
+        selection_anchor(app),
+        clicked,
+        mods.shift,
+        mods.command,
+    );
+    if !mods.shift {
+        app.ui.project_panel.anchor = Some(match clicked {
+            Entry::Bin(id) => id.0,
+            Entry::Item(id) => id.0,
+        });
+        app.ui.project_panel.anchor_bin = matches!(clicked, Entry::Bin(_));
+    }
+    app.ui.project_panel.keyboard_cursor_item = None;
+    app.ui.project_panel.keyboard_cursor_bin = None;
+    app.ui.project_panel.selected_bin = match clicked {
+        Entry::Bin(id) if bins.contains(&id.0) => Some(id.0),
+        _ => bins.last().copied(),
+    };
+    app.ui.project_panel.selected_bins = bins;
+    actions.push(("project.select".into(), json!({"items": items.iter().map(|id| id.0).collect::<Vec<_>>()})));
 }
 
 /// Click / double-click / drag / context menu of an item (row, card).
@@ -233,17 +309,7 @@ pub fn item_interactions(
     menu: bool,
 ) {
     if resp.clicked() {
-        let mods = click_modifiers(ui);
-        let order = if mods.shift { items_in_view(app, v, &app.ui.project_search.to_ascii_lowercase()) } else { Vec::new() };
-        let anchor = app.ui.project_panel.anchor.map(ItemId);
-        let sel = click_selection(&app.session.state.project_selection, &order, anchor, id, mods.shift, mods.command);
-        // a Shift-click keeps the anchor; a plain or Ctrl/Cmd click sets it
-        if !mods.shift {
-            app.ui.project_panel.anchor = Some(id.0);
-        }
-        app.ui.project_panel.selected_bin = None;
-        app.ui.project_panel.selected_bins.clear();
-        actions.push(("project.select".into(), json!({"items": sel.iter().map(|i| i.0).collect::<Vec<_>>()})));
+        apply_click_selection(app, ui, v, Entry::Item(id), actions);
     }
     if resp.double_clicked() {
         let matte = matches!(kind, ItemKind::Media(m) if matches!(m.media, filmcraft_engine::project::MediaRef::Generator(filmcraft_media::Generator::ColorMatte { .. })));
@@ -760,6 +826,7 @@ fn list_bin(app: &mut FilmcraftApp, ui: &mut egui::Ui, bin: &Bin, depth: usize, 
         let Some(b) = app.session.project.root.find_bin(bid).cloned() else { continue };
         let open = app.ui.expanded_bins.contains(&b.id.0) || !filter.is_empty();
         let (r, resp) = ui.allocate_exact_size(vec2(lc.width, lc.row_h), Sense::click_and_drag());
+        scroll_selected_into_view(app, ui, Entry::Bin(b.id), r);
         let selected = app.ui.project_panel.selected_bins.contains(&b.id.0) || app.ui.project_panel.selected_bin == Some(b.id.0);
         if selected {
             ui.painter().rect_filled(r, 0.0, t.row_selected);
@@ -791,9 +858,7 @@ fn list_bin(app: &mut FilmcraftApp, ui: &mut egui::Ui, bin: &Bin, depth: usize, 
                     app.ui.expanded_bins.push(b.id.0);
                 }
             }
-            app.ui.project_panel.selected_bin = Some(b.id.0);
-            app.ui.project_panel.selected_bins = vec![b.id.0];
-            actions.push(("project.select".into(), json!({"items": []})));
+            apply_click_selection(app, ui, v, Entry::Bin(b.id), actions);
         }
         if resp.double_clicked() {
             let mods = click_modifiers(ui);
@@ -812,6 +877,7 @@ fn list_bin(app: &mut FilmcraftApp, ui: &mut egui::Ui, bin: &Bin, depth: usize, 
         }
         let Some(it) = app.session.project.item(id).cloned() else { continue };
         let (r, resp) = ui.allocate_exact_size(vec2(lc.width, lc.row_h), Sense::click_and_drag());
+        scroll_selected_into_view(app, ui, Entry::Item(id), r);
         note_hit(ui, v, id, r);
         let selected = app.session.state.project_selection.contains(&id);
         if selected {
@@ -995,6 +1061,7 @@ fn bin_card(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, b: &Bin, v: &Vie
     let t = app.tokens;
     let th = Rect::from_min_size(r.min, vec2(r.width(), r.width() * 9.0 / 16.0));
     let resp = ui.interact(r.expand(2.0), egui::Id::unique((&v.prefix, "bincard", b.id.0)), Sense::click_and_drag());
+    scroll_selected_into_view(app, ui, Entry::Bin(b.id), r);
     let selected = app.ui.project_panel.selected_bins.contains(&b.id.0) || app.ui.project_panel.selected_bin == Some(b.id.0);
     let bg = Rect::from_min_max(th.min - vec2(6.0, 6.0), pos2(th.max.x + 6.0, r.max.y + 2.0));
     ui.painter().rect_filled(bg, 4.0, if selected { t.tl_header_bg } else { t.panel_bg });
@@ -1017,9 +1084,7 @@ fn bin_card(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, b: &Bin, v: &Vie
         crate::panels::start_drag_bin(ui, b.id.0);
     }
     if resp.clicked() {
-        app.ui.project_panel.selected_bin = Some(b.id.0);
-        app.ui.project_panel.selected_bins = vec![b.id.0];
-        actions.push(("project.select".into(), json!({"items": []})));
+        apply_click_selection(app, ui, v, Entry::Bin(b.id), actions);
     }
     slow_click_rename_bin(app, ui, &resp, nr, b.id.0, selected, &v.prefix);
     if resp.double_clicked() {
@@ -1066,6 +1131,7 @@ pub fn icon_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &View
                 let Some(kind) = app.session.project.item(id).map(|x| x.kind.clone()) else { continue };
                 let was_selected = app.session.state.project_selection.contains(&id);
                 if let Some(resp) = card(app, ui, r, id, &v.prefix, true, true, Sense::click_and_drag()) {
+                    scroll_selected_into_view(app, ui, Entry::Item(id), r);
                     note_hit(ui, v, id, r);
                     let name_r = Rect::from_min_max(pos2(r.min.x, r.min.y + th_h), r.max);
                     slow_click_rename(app, ui, &resp, name_r, id, was_selected);
@@ -1286,8 +1352,8 @@ fn canvas_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, bin: Option<
 
 #[cfg(test)]
 mod clear_tests {
-    use super::{clear_params, click_selection};
-    use filmcraft_project::ItemId;
+    use super::{Entry, clear_params, click_selection};
+    use filmcraft_project::{BinId, ItemId};
     use serde_json::json;
 
     #[test]
@@ -1303,24 +1369,30 @@ mod clear_tests {
 
     #[test]
     fn shift_click_selects_the_range_from_the_anchor() {
-        let order = ids(&[1, 2, 3, 4, 5]);
-        let sel = click_selection(&ids(&[2]), &order, Some(ItemId(2)), ItemId(4), true, false);
-        assert_eq!(sel, ids(&[2, 3, 4]));
+        let order: Vec<Entry> = ids(&[1, 2, 3, 4, 5]).into_iter().map(Entry::Item).collect();
+        let sel = click_selection(&ids(&[2]), &[], &order, Some(Entry::Item(ItemId(2))), Entry::Item(ItemId(4)), true, false);
+        assert_eq!(sel, (ids(&[2, 3, 4]), Vec::new()));
         // backwards, and replacing a different selection
-        let sel = click_selection(&ids(&[5]), &order, Some(ItemId(4)), ItemId(2), true, false);
-        assert_eq!(sel, ids(&[2, 3, 4]));
+        let sel = click_selection(&ids(&[5]), &[], &order, Some(Entry::Item(ItemId(4))), Entry::Item(ItemId(2)), true, false);
+        assert_eq!(sel, (ids(&[2, 3, 4]), Vec::new()));
         // Ctrl/Cmd+Shift extends the selection
-        let sel = click_selection(&ids(&[1]), &order, Some(ItemId(3)), ItemId(4), true, true);
-        assert_eq!(sel, ids(&[1, 3, 4]));
+        let sel = click_selection(&ids(&[1]), &[], &order, Some(Entry::Item(ItemId(3))), Entry::Item(ItemId(4)), true, true);
+        assert_eq!(sel, (ids(&[1, 3, 4]), Vec::new()));
         // no anchor in the shown items: like a plain click
-        assert_eq!(click_selection(&ids(&[1]), &order, Some(ItemId(9)), ItemId(4), true, false), ids(&[4]));
+        assert_eq!(click_selection(&ids(&[1]), &[], &order, Some(Entry::Item(ItemId(9))), Entry::Item(ItemId(4)), true, false), (ids(&[4]), Vec::new()));
     }
 
     #[test]
     fn command_click_toggles_and_plain_click_replaces() {
-        let order = ids(&[1, 2, 3]);
-        assert_eq!(click_selection(&ids(&[1]), &order, None, ItemId(3), false, true), ids(&[1, 3]));
-        assert_eq!(click_selection(&ids(&[1, 3]), &order, None, ItemId(3), false, true), ids(&[1]));
-        assert_eq!(click_selection(&ids(&[1, 3]), &order, None, ItemId(2), false, false), ids(&[2]));
+        assert_eq!(click_selection(&ids(&[1]), &[], &[], None, Entry::Item(ItemId(3)), false, true), (ids(&[1, 3]), Vec::new()));
+        assert_eq!(click_selection(&ids(&[1, 3]), &[], &[], None, Entry::Item(ItemId(3)), false, true), (ids(&[1]), Vec::new()));
+        assert_eq!(click_selection(&ids(&[1, 3]), &[], &[], None, Entry::Item(ItemId(2)), false, false), (ids(&[2]), Vec::new()));
+    }
+
+    #[test]
+    fn command_and_shift_click_form_a_mixed_bin_item_selection() {
+        let order = vec![Entry::Bin(BinId(7)), Entry::Item(ItemId(1)), Entry::Item(ItemId(2))];
+        assert_eq!(click_selection(&ids(&[1]), &[], &order, None, Entry::Bin(BinId(7)), false, true), (ids(&[1]), vec![7]));
+        assert_eq!(click_selection(&[], &[7], &order, Some(Entry::Bin(BinId(7))), Entry::Item(ItemId(2)), true, false), (ids(&[1, 2]), vec![7]));
     }
 }

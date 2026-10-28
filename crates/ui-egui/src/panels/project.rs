@@ -95,6 +95,14 @@ pub struct ProjectPanelUi {
     pub selected_bins: Vec<u64>,
     /// The item a Shift-click selects a range from: the last one clicked without Shift.
     pub anchor: Option<u64>,
+    /// Whether `anchor` names a bin rather than a project item.
+    pub anchor_bin: bool,
+    /// Selection changed from the keyboard and should be brought into view on the next frame.
+    pub scroll_to_item: Option<u64>,
+    pub scroll_to_bin: Option<u64>,
+    /// Moving end of a keyboard range selection; unlike `scroll_to_*`, drawing does not clear it.
+    pub keyboard_cursor_item: Option<u64>,
+    pub keyboard_cursor_bin: Option<u64>,
     pub rename: Option<Rename>,
     pub dialog: Option<ProjectDialog>,
     pub hover: Option<Hover>,
