@@ -18,6 +18,7 @@
 //! | `project.freeform.options` | Freeform View Options… (grid, snap, names, durations) |
 //! | `project.renameBin` | rename a bin (inline rename, undoable) |
 //! | `project.selectAll` / `project.deselectAll` | select the items a bin shows (`bin`, plus the sub-bins open in List view in `expanded`; without `bin` every item in the project) / clear the Project panel selection (Cmd+A / Cmd+Shift+A with the panel focused) |
+//! | `project.copy` / `project.cut` / `project.paste` | copy or cut selected Project items / paste snapshots into the shown bin |
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -26,7 +27,7 @@ use filmcraft_time::{Tick, TimeDisplay, format_time};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::commands::{CommandSpec, always, bad, bool_p, f64_p, item_p, str_p, u64_p};
+use crate::commands::{CommandSpec, always, bad, bool_p, f64_p, has_project_selection, item_p, str_p, u64_p};
 use crate::{Result, Session};
 
 // ------------------------------------------------------------------------------------ settings
@@ -1265,5 +1266,43 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             s.state.project_selection.clear();
             Ok(Value::Null)
         }),
+        c("project.copy", "Copy Project Items", "{}", has_project_selection, |s, _| {
+            s.state.project_clipboard = s.state.project_selection.iter().filter_map(|id| s.project.item(*id).cloned()).collect();
+            Ok(json!({"copied": s.state.project_clipboard.len()}))
+        }),
+        c("project.cut", "Cut Project Items", "{}", has_project_selection, |s, _| {
+            s.state.project_clipboard = s.state.project_selection.iter().filter_map(|id| s.project.item(*id).cloned()).collect();
+            s.execute("project.delete", json!({}))
+        }),
+        c(
+            "project.paste",
+            "Paste Project Items",
+            r#"{"bin":binId?}"#,
+            |s| if s.state.project_clipboard.is_empty() { Err("the Project clipboard is empty".into()) } else { Ok(()) },
+            |s, p| {
+                let bin = match p.get("bin") {
+                    None | Some(Value::Null) => None,
+                    Some(value) => {
+                        let id = BinId(value.as_u64().ok_or_else(|| bad("project.paste", "`bin` must be a bin id"))?);
+                        Some(s.project.root.find_bin(id).is_some().then_some(id).ok_or_else(|| bad("project.paste", "no such bin"))?)
+                    }
+                };
+                let copied = s.state.project_clipboard.clone();
+                let ids = s.edit("Paste", |project, state| {
+                    let mut ids = Vec::with_capacity(copied.len());
+                    for item in &copied {
+                        let id = project.add_item(&item.name, item.label, item.kind.clone(), bin);
+                        if let Some(pasted) = project.item_mut(id) {
+                            pasted.metadata = item.metadata.clone();
+                            pasted.split = item.split;
+                        }
+                        ids.push(id);
+                    }
+                    state.project_selection = ids.clone();
+                    Ok(ids)
+                })?;
+                Ok(json!({"items": ids.iter().map(|id| id.0).collect::<Vec<_>>() }))
+            },
+        ),
     ]
 }
