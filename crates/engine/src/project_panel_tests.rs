@@ -362,6 +362,51 @@ fn project_paste_remaps_a_copied_subclip_to_its_copied_parent() {
 }
 
 #[test]
+fn project_paste_rejects_a_subclip_whose_parent_was_deleted() {
+    let mut s = demo();
+    let parent = media(&s)[0];
+    let subclip = std::sync::Arc::make_mut(&mut s.project).add_item(
+        "Orphaned subclip",
+        Label::Iris,
+        ItemKind::Subclip { parent, range: TimeRange::new(Tick::ZERO, Tick(100)), restrict_trims: false },
+        None,
+    );
+    s.state.project_selection = vec![subclip];
+    s.execute("project.copy", json!({})).unwrap();
+    let before = s.project.clone();
+    std::sync::Arc::make_mut(&mut s.project).items.remove(&parent);
+    let after_delete = s.project.clone();
+
+    let error = s.execute("project.paste", json!({})).unwrap_err().to_string();
+    assert!(error.contains("parent item"));
+    assert_eq!(s.project, after_delete, "a rejected paste must not commit partial items");
+    assert_ne!(s.project, before);
+}
+
+#[test]
+fn project_copy_and_cut_keep_source_graphics_consistent() {
+    let mut s = demo();
+    let graphic = std::sync::Arc::make_mut(&mut s.project).add_item(
+        "Shared title",
+        Label::Rose,
+        ItemKind::Graphic { width: 1920, height: 1080, rate: filmcraft_time::FrameRate::FPS_30 },
+        None,
+    );
+    let design = filmcraft_project::SourceGraphic::default();
+    std::sync::Arc::make_mut(&mut s.project).source_graphics.insert(graphic, design.clone());
+    s.state.project_selection = vec![graphic];
+    s.execute("project.copy", json!({})).unwrap();
+    let pasted = ItemId(s.execute("project.paste", json!({})).unwrap()["items"][0].as_u64().unwrap());
+    assert_eq!(s.project.source_graphics.get(&pasted), Some(&design));
+
+    s.state.project_selection = vec![graphic];
+    s.execute("project.cut", json!({})).unwrap();
+    assert!(s.project.item(graphic).is_none());
+    assert!(!s.project.source_graphics.contains_key(&graphic));
+    assert_eq!(s.project.source_graphics.get(&pasted), Some(&design));
+}
+
+#[test]
 fn select_all_in_a_bin_skips_closed_bins_and_other_bins() {
     // #456: Cmd+A in the Project panel selected every item in the project, closed bins included
     let mut s = demo();
