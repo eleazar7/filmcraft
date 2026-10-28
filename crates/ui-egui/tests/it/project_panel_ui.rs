@@ -548,7 +548,7 @@ fn collapsing_a_multi_bin_selection_does_not_start_inline_rename() {
     d.app().ui.project_panel.selected_bins = vec![first, second];
     d.frames(3);
     let r = d.rect(&format!("project.bin.{first}"));
-    d.ok("ui.click", json!({"x": r[0] + r[2] / 2.0, "y": r[1] + r[3] / 2.0}));
+    d.ok("ui.click", json!({"x": r[0] + r[2] / 2.0, "y": r[1] + r[3] + 11.0}));
     d.frames(2);
     std::thread::sleep(std::time::Duration::from_millis(550));
     d.frames(2);
