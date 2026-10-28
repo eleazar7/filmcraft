@@ -2,7 +2,8 @@
 //! sorting, view presets, Freeform positions / stacks / arrangements (undoable, saved with the
 //! project) and bin renames.
 
-use filmcraft_project::{BinEntry, ItemId, ItemKind};
+use filmcraft_project::{BinEntry, ItemId, ItemKind, Label};
+use filmcraft_time::{Tick, TimeRange};
 use serde_json::{Value, json};
 
 use crate::Session;
@@ -338,6 +339,26 @@ fn project_copy_pastes_snapshots_into_the_chosen_bin() {
     );
     assert_eq!(s.undo().as_deref(), Some("Paste"));
     assert!(s.project.item(pasted).is_none());
+}
+
+#[test]
+fn project_paste_remaps_a_copied_subclip_to_its_copied_parent() {
+    let mut s = demo();
+    let parent = media(&s)[0];
+    let subclip = std::sync::Arc::make_mut(&mut s.project).add_item(
+        "Copied subclip",
+        Label::Iris,
+        ItemKind::Subclip { parent, range: TimeRange::new(Tick::ZERO, Tick(100)), restrict_trims: true },
+        None,
+    );
+    s.state.project_selection = vec![parent, subclip];
+    s.execute("project.copy", json!({})).unwrap();
+    let pasted = s.execute("project.paste", json!({})).unwrap()["items"].as_array().unwrap().iter().map(|id| ItemId(id.as_u64().unwrap())).collect::<Vec<_>>();
+    let pasted_parent = pasted[0];
+    let pasted_subclip = pasted[1];
+    assert_ne!(pasted_parent, parent);
+    assert_ne!(pasted_subclip, subclip);
+    assert!(matches!(s.project.item(pasted_subclip).map(|item| &item.kind), Some(ItemKind::Subclip { parent, .. }) if *parent == pasted_parent));
 }
 
 #[test]
