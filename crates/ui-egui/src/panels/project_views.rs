@@ -1083,10 +1083,10 @@ fn bin_card(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, b: &Bin, v: &Vie
     if resp.drag_started() {
         crate::panels::start_drag_bin(ui, b.id.0);
     }
+    slow_click_rename_bin(app, ui, &resp, nr, b.id.0, selected, &v.prefix);
     if resp.clicked() {
         apply_click_selection(app, ui, v, Entry::Bin(b.id), actions);
     }
-    slow_click_rename_bin(app, ui, &resp, nr, b.id.0, selected, &v.prefix);
     if resp.double_clicked() {
         let mods = click_modifiers(ui);
         if let Err(e) = open_bin(app, v.inst, b.id.0, None, mods) {

@@ -540,6 +540,24 @@ fn a_slow_second_click_renames_a_bin_inline() {
 }
 
 #[test]
+fn collapsing_a_multi_bin_selection_does_not_start_inline_rename() {
+    let mut d = project_driver();
+    d.exec("project.view.set", json!({"view": "icon"}));
+    let (first, _) = d.footage();
+    let second = d.exec("file.newBin", json!({"name": "Second selected bin"}))["bin"].as_u64().unwrap();
+    d.app().ui.project_panel.selected_bins = vec![first, second];
+    d.frames(3);
+    let r = d.rect(&format!("project.bin.{first}"));
+    d.ok("ui.click", json!({"x": r[0] + r[2] / 2.0, "y": r[1] + r[3] / 2.0}));
+    d.frames(2);
+    std::thread::sleep(std::time::Duration::from_millis(550));
+    d.frames(2);
+
+    assert_eq!(d.app().ui.project_panel.selected_bins, vec![first]);
+    assert!(d.app().ui.project_panel.rename.is_none(), "collapsing a multi-selection is not a slow second click");
+}
+
+#[test]
 fn arrow_keys_navigate_expand_and_collapse_bins() {
     let mut d = project_driver();
     d.exec("project.view.set", json!({"view": "list"}));
@@ -561,6 +579,31 @@ fn arrow_keys_navigate_expand_and_collapse_bins() {
     assert_eq!(d.app().ui.project_panel.selected_bins, vec![outer]);
     d.ok("ui.menu.invoke", json!({"id": "projectPanel.moveLeft"}));
     assert!(!d.app().ui.expanded_bins.contains(&outer));
+}
+
+#[test]
+fn arrow_navigation_ignores_a_cursor_that_is_no_longer_selected() {
+    use filmcraft_ui_egui::panels::project_views::Entry;
+
+    let mut d = project_driver();
+    d.exec("project.view.set", json!({"view": "list"}));
+    d.frames(3);
+    let view = filmcraft_ui_egui::panels::project::view_of(d.app(), filmcraft_ui_egui::panels::project::Inst::Main);
+    let entries = filmcraft_ui_egui::panels::project_views::entries_in_view(d.app(), &view, "");
+    let Some(stale) = entries.first().copied() else { return };
+    match stale {
+        Entry::Bin(id) => d.app().ui.project_panel.keyboard_cursor_bin = Some(id.0),
+        Entry::Item(id) => d.app().ui.project_panel.keyboard_cursor_item = Some(id.0),
+    }
+    d.app().ui.project_panel.selected_bin = None;
+    d.app().ui.project_panel.selected_bins.clear();
+    d.app().session.state.project_selection.clear();
+
+    d.ok("ui.menu.invoke", json!({"id": "projectPanel.moveDown"}));
+    match stale {
+        Entry::Bin(id) => assert_eq!(d.app().ui.project_panel.selected_bins, vec![id.0]),
+        Entry::Item(id) => assert_eq!(d.app().session.state.project_selection, vec![id]),
+    }
 }
 
 #[test]

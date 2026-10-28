@@ -433,8 +433,15 @@ fn project_panel(app: &mut FilmcraftApp, op: &str) -> Result<Value, String> {
         .ui
         .project_panel
         .keyboard_cursor_bin
+        .filter(|id| app.ui.project_panel.selected_bins.contains(id))
         .map(|id| Entry::Bin(filmcraft_project::BinId(id)))
-        .or_else(|| app.ui.project_panel.keyboard_cursor_item.map(|id| Entry::Item(filmcraft_project::ItemId(id))))
+        .or_else(|| {
+            app.ui
+                .project_panel
+                .keyboard_cursor_item
+                .filter(|id| app.session.state.project_selection.iter().any(|item| item.0 == *id))
+                .map(|id| Entry::Item(filmcraft_project::ItemId(id)))
+        })
         .or_else(|| app.ui.project_panel.selected_bins.last().copied().map(|id| Entry::Bin(filmcraft_project::BinId(id))))
         .or_else(|| app.ui.project_panel.selected_bin.map(|id| Entry::Bin(filmcraft_project::BinId(id))))
         .or_else(|| app.session.state.project_selection.last().copied().map(Entry::Item));
