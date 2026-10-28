@@ -540,6 +540,30 @@ fn a_slow_second_click_renames_a_bin_inline() {
 }
 
 #[test]
+fn arrow_keys_navigate_expand_and_collapse_bins() {
+    let mut d = project_driver();
+    d.exec("project.view.set", json!({"view": "list"}));
+    let outer = d.exec("file.newBin", json!({"name": "000 Outer"}))["bin"].as_u64().unwrap();
+    let inner = d.exec("file.newBin", json!({"name": "000 Inner", "parent": outer}))["bin"].as_u64().unwrap();
+    d.app().session.state.project_selection.clear();
+    d.app().ui.project_panel.selected_bin = None;
+    d.app().ui.project_panel.selected_bins.clear();
+    d.app().ui.expanded_bins.clear();
+    d.frames(3);
+
+    d.ok("ui.menu.invoke", json!({"id": "projectPanel.moveDown"}));
+    assert_eq!(d.app().ui.project_panel.selected_bins, vec![outer]);
+    d.ok("ui.menu.invoke", json!({"id": "projectPanel.moveRight"}));
+    assert!(d.app().ui.expanded_bins.contains(&outer));
+    d.ok("ui.menu.invoke", json!({"id": "projectPanel.moveRight"}));
+    assert_eq!(d.app().ui.project_panel.selected_bins, vec![inner]);
+    d.ok("ui.menu.invoke", json!({"id": "projectPanel.moveLeft"}));
+    assert_eq!(d.app().ui.project_panel.selected_bins, vec![outer]);
+    d.ok("ui.menu.invoke", json!({"id": "projectPanel.moveLeft"}));
+    assert!(!d.app().ui.expanded_bins.contains(&outer));
+}
+
+#[test]
 fn select_all_takes_only_the_shown_bin() {
     // #456: Cmd+A selected every item in the project, closed bins and other tabs included
     let mut d = project_driver();
