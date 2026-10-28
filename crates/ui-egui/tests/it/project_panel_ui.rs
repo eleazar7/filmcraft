@@ -517,6 +517,29 @@ fn bins_open_in_place_in_a_tab_or_in_a_window() {
 }
 
 #[test]
+fn a_slow_second_click_renames_a_bin_inline() {
+    let mut d = project_driver();
+    d.exec("project.view.set", json!({"view": "list"}));
+    let (bin, _) = d.footage();
+    d.frames(3);
+    let r = d.rect(&format!("project.bin.{bin}"));
+    let click_name = |d: &mut Driver| {
+        d.ok("ui.click", json!({"x": r[0] + 90.0, "y": r[1] + r[3] / 2.0}));
+        d.frames(2);
+    };
+    click_name(&mut d);
+    assert_eq!(d.app().ui.project_panel.selected_bins, vec![bin]);
+    std::thread::sleep(std::time::Duration::from_millis(550));
+    d.frames(2);
+    click_name(&mut d);
+    std::thread::sleep(std::time::Duration::from_millis(550));
+    d.frames(2);
+
+    assert!(d.has("project.rename"));
+    assert_eq!(d.app().ui.project_panel.rename.as_ref().and_then(|rename| rename.bin), Some(bin));
+}
+
+#[test]
 fn select_all_takes_only_the_shown_bin() {
     // #456: Cmd+A selected every item in the project, closed bins and other tabs included
     let mut d = project_driver();
@@ -535,6 +558,7 @@ fn select_all_takes_only_the_shown_bin() {
     d.frames(2);
     d.key("Cmd+A");
     let sel = d.app().session.state.project_selection.clone();
+    assert!(d.app().ui.project_panel.selected_bins.contains(&bin), "the visible bin itself is selected");
     assert!(sel.iter().all(|i| !items.contains(&i.0)), "{sel:?}");
     assert!(sel.iter().all(|i| d.app().session.project.root.children.contains(&BinEntry::Item(*i))), "{sel:?}");
     // twirled open in List view, its items are shown and count
@@ -545,6 +569,7 @@ fn select_all_takes_only_the_shown_bin() {
     assert!(items.iter().all(|i| sel.contains(&ItemId(*i))), "{sel:?}");
     d.key("Cmd+Shift+A");
     assert!(d.app().session.state.project_selection.is_empty());
+    assert!(d.app().ui.project_panel.selected_bins.is_empty());
     // the bin opened in its own tab: exactly its items
     d.app().ui.expanded_bins.clear();
     d.app().session.prefs.general.bins_double_click = "openNewTab".into();
