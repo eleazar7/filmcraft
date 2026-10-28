@@ -1272,7 +1272,46 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
         }),
         c("project.cut", "Cut Project Items", "{}", has_project_selection, |s, _| {
             s.state.project_clipboard = s.state.project_selection.iter().filter_map(|id| s.project.item(*id).cloned()).collect();
-            s.execute("project.delete", json!({}))
+            let selected: BTreeSet<ItemId> = s.state.project_selection.iter().copied().collect();
+            // A cut removes Project-panel entries, but an item already referenced by a sequence
+            // must remain in the document so its Timeline clips stay online. Parents needed by an
+            // uncut subclip are retained for the same reason. Ordinary Delete keeps its existing
+            // make-offline behaviour; this preservation is specific to Cut.
+            let mut retained = BTreeSet::new();
+            for sequence in s.project.sequences() {
+                if let Some(sequence) = sequence.as_sequence() {
+                    for clip in sequence.all_tracks().flat_map(|track| &track.items) {
+                        let mut id = clip.item;
+                        for _ in 0..16 {
+                            retained.insert(id);
+                            match s.project.item(id).map(|item| &item.kind) {
+                                Some(ItemKind::Subclip { parent, .. }) => id = *parent,
+                                _ => break,
+                            }
+                        }
+                    }
+                }
+            }
+            for item in s.project.items.values() {
+                if !selected.contains(&item.id)
+                    && let ItemKind::Subclip { parent, .. } = item.kind
+                {
+                    retained.insert(parent);
+                }
+            }
+            let removed = s.edit("Cut", |project, state| {
+                let mut removed = 0usize;
+                for id in &selected {
+                    project.root.remove_item(*id);
+                    if !retained.contains(id) {
+                        project.items.remove(id);
+                    }
+                    removed += 1;
+                }
+                state.project_selection.clear();
+                Ok(removed)
+            })?;
+            Ok(json!({"items": removed}))
         }),
         c(
             "project.paste",
@@ -1290,13 +1329,22 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
                 let copied = s.state.project_clipboard.clone();
                 let ids = s.edit("Paste", |project, state| {
                     let mut ids = Vec::with_capacity(copied.len());
+                    let mut remapped = BTreeMap::new();
                     for item in &copied {
                         let id = project.add_item(&item.name, item.label, item.kind.clone(), bin);
+                        remapped.insert(item.id, id);
                         if let Some(pasted) = project.item_mut(id) {
                             pasted.metadata = item.metadata.clone();
                             pasted.split = item.split;
                         }
                         ids.push(id);
+                    }
+                    for id in &ids {
+                        if let Some(ProjectItem { kind: ItemKind::Subclip { parent, .. }, .. }) = project.item_mut(*id)
+                            && let Some(new_parent) = remapped.get(parent)
+                        {
+                            *parent = *new_parent;
+                        }
                     }
                     state.project_selection = ids.clone();
                     Ok(ids)
