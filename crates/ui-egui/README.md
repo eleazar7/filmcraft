@@ -14,6 +14,16 @@ enters its first child, and Left collapses it or returns to its parent. A focuse
 its normal text-editing commands. This routing also applies to the native macOS Edit menu, which
 receives its key equivalents before the panel sees a key press.
 
+## Export range warnings
+
+The Export panel shows the selected range's length in sequence frames and seconds beside Range
+(`export.range.duration`). When Source In/Out covers just one sequence frame and at least one
+mark is set, `export.range.warning` explains how to export the whole sequence instead (#3364).
+The warning is advisory: exporting one frame remains valid. Entire Source, Work Area and Custom
+ranges do not show this warning. `export_ui::single_frame_in_out_warning_updates_with_range_and_marks`
+checks the warning and duration as marks and range selections change; the same test can render
+`export-single-frame-warning.png` with `FILMCRAFT_UI_SNAPSHOT_DIR`.
+
 ## Control input limits
 
 The control channel bounds `ui.click` to 10 clicks and `ui.drag` to 1024 movement steps (#2784).
