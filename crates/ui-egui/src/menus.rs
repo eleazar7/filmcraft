@@ -188,7 +188,8 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
     // macOS takes the Edit menu's key equivalents before the panel sees their key presses. Route
     // them here, where keyboard shortcuts, the native menu and the in-window menu all meet, so a
     // focused Project panel never edits the Timeline (#168).
-    if app.ui.focused == PanelKind::Project {
+    let untargeted = params.is_null() || params.as_object().is_some_and(|object| object.is_empty());
+    if app.ui.focused == PanelKind::Project && untargeted {
         match id {
             "edit.selectAll" => {
                 let (command, project_params, bins) = crate::panels::project::select_all_command(app);
@@ -1378,6 +1379,25 @@ mod tests {
         assert!(app.session.project.root.parent_of(project_item).is_none(), "the cut item must leave its Project bin");
         assert_eq!(app.session.state.selection, timeline_selection, "the Timeline selection must not be cut");
         assert_eq!(app.session.state.project_clipboard.len(), 1);
+    }
+
+    #[test]
+    fn explicit_timeline_targets_override_project_focus() {
+        let mut session = filmcraft_engine::Session::default();
+        session.execute("file.openDemoProject", json!({})).unwrap();
+        let clip = session.active_sequence().unwrap().video_tracks[0].items[0].id;
+        let project_item = session.active_sequence().unwrap().video_tracks[0].items[0].item;
+        session.state.project_selection = vec![project_item];
+        let mut app = FilmcraftApp::new(session);
+        app.ui.focused = PanelKind::Project;
+
+        invoke(&mut app, &egui::Context::default(), "edit.clear", json!({"clips": [clip.0]})).unwrap();
+
+        assert!(app.session.project.item(project_item).is_some(), "an explicit Timeline clear must not delete the Project selection");
+        assert!(
+            app.session.active_sequence().unwrap().video_tracks.iter().flat_map(|track| &track.items).all(|item| item.id != clip),
+            "the explicitly targeted Timeline clip is cleared"
+        );
     }
 
     #[test]

@@ -558,6 +558,27 @@ fn collapsing_a_multi_bin_selection_does_not_start_inline_rename() {
 }
 
 #[test]
+fn collapsing_a_mixed_selection_does_not_rename_the_item() {
+    let mut d = project_driver();
+    d.exec("project.view.set", json!({"view": "icon"}));
+    let (bin, items) = d.footage();
+    double_click_bin(&mut d, bin, false);
+    let item = ItemId(items[0]);
+    d.app().session.state.project_selection = vec![item];
+    d.app().ui.project_panel.selected_bins = vec![bin];
+    d.frames(3);
+    let r = d.rect(&format!("project.item.{}", item.0));
+    d.ok("ui.click", json!({"x": r[0] + r[2] / 2.0, "y": r[1] + r[3] - 10.0}));
+    d.frames(2);
+    std::thread::sleep(std::time::Duration::from_millis(550));
+    d.frames(2);
+
+    assert_eq!(d.app().session.state.project_selection, vec![item]);
+    assert!(d.app().ui.project_panel.selected_bins.is_empty());
+    assert!(d.app().ui.project_panel.rename.is_none(), "collapsing a mixed selection is not a slow second click");
+}
+
+#[test]
 fn arrow_keys_navigate_expand_and_collapse_bins() {
     let mut d = project_driver();
     d.exec("project.view.set", json!({"view": "list"}));

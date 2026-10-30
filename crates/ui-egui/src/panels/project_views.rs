@@ -573,6 +573,7 @@ fn slow_click_rename(app: &mut FilmcraftApp, ui: &egui::Ui, resp: &egui::Respons
     if resp.clicked()
         && was_selected
         && app.session.state.project_selection.len() == 1
+        && app.ui.project_panel.selected_bins.is_empty()
         && ui.input(|i| i.modifiers.is_none())
         && resp.interact_pointer_pos().is_some_and(|p| name_rect.contains(p))
     {
@@ -583,7 +584,7 @@ fn slow_click_rename(app: &mut FilmcraftApp, ui: &egui::Ui, resp: &egui::Respons
     {
         if now >= at {
             ui.ctx().data_mut(|d| d.remove::<(u64, f64)>(key));
-            if app.session.state.project_selection == [id] {
+            if app.session.state.project_selection == [id] && app.ui.project_panel.selected_bins.is_empty() {
                 let name = app.session.project.item(id).map(|i| i.name.clone()).unwrap_or_default();
                 app.ui.project_panel.rename = Some(crate::panels::project::Rename { item: Some(id.0), bin: None, text: name, panel: String::new() });
             }
